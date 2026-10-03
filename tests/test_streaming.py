@@ -1,14 +1,16 @@
 import asyncio
 import tracemalloc
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from io import TextIOWrapper
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeVar
 from xml.etree import ElementTree as ET
 
 import pytest
 
 from sitemapr import Page, Param, SiteMapr, SiteMapUrl
+
+T = TypeVar("T")
 
 
 @pytest.mark.parametrize(
@@ -81,12 +83,7 @@ def test_generated_urls_use_bounded_memory(tmp_path: Path, mode: Literal["sync",
 
     # When
     # Trace only generation and saving; parse the completed output after measurement.
-    tracemalloc.start()
-    try:
-        _save(mode, sitemap, tmp_path, urls)
-        peak = tracemalloc.get_traced_memory()[1]
-    finally:
-        tracemalloc.stop()
+    _, peak = _measure_peak_bytes(lambda: _save(mode, sitemap, tmp_path, urls))
 
     # Then
     assert peak < 2 * 1024 * 1024
@@ -112,16 +109,65 @@ def test_large_parameter_product_yields_first_url_with_bounded_memory() -> None:
     )
 
     # When
-    tracemalloc.start()
-    try:
-        first = next(sitemap.iter_urls())
-        peak = tracemalloc.get_traced_memory()[1]
-    finally:
-        tracemalloc.stop()
+    first, peak = _measure_peak_bytes(lambda: next(sitemap.iter_urls()))
 
     # Then
     assert first.loc == "https://example.com/0/0?a=0&b=0"
     assert peak < 1024 * 1024
+
+
+def test_page_generator_is_consumed_lazily_without_replay() -> None:
+    """Page generators are consumed on demand and produce no URLs after being exhausted."""
+    # Given
+    consumed: list[str] = []
+
+    def pages() -> Iterator[Page]:
+        for name in ("first", "second"):
+            consumed.append(name)
+            yield Page(path=f"/{name}")
+
+    # When
+    sitemap = SiteMapr("https://example.com", pages=pages())
+    consumed_after_construction = consumed.copy()
+    urls = sitemap.iter_urls()
+    first = next(urls).loc
+    consumed_after_first_url = consumed.copy()
+    remaining = [url.loc for url in urls]
+    replayed = list(sitemap.iter_urls())
+
+    # Then
+    assert consumed_after_construction == []
+    assert consumed_after_first_url == ["first"]
+    assert consumed == ["first", "second"]
+    assert first == "https://example.com/first"
+    assert remaining == ["https://example.com/second"]
+    assert replayed == []
+
+
+def test_query_and_path_parameters_produce_all_urls_in_order() -> None:
+    """Every query value is paired with every path value in declaration order."""
+    # Given
+    sitemap = SiteMapr(
+        "https://example.com",
+        pages=[
+            Page(
+                path="/posts/{id}",
+                path_params=[Param(name="id", values=["1", "2"])],
+                query_params=[Param(name="sort", values=["asc", "desc"])],
+            )
+        ],
+    )
+
+    # When
+    urls = [url.loc for url in sitemap.iter_urls()]
+
+    # Then
+    assert urls == [
+        "https://example.com/posts/1?sort=asc",
+        "https://example.com/posts/2?sort=asc",
+        "https://example.com/posts/1?sort=desc",
+        "https://example.com/posts/2?sort=desc",
+    ]
 
 
 @pytest.mark.parametrize("empty_parameter", ["path", "query"])
@@ -206,8 +252,9 @@ def test_cancelled_async_save_closes_output(
 
 
 @pytest.mark.parametrize("mode", ["sync", "async"])
+@pytest.mark.parametrize("chunk_size", [0, -1], ids=["zero", "negative"])
 def test_invalid_chunk_size_does_not_consume_source(
-    tmp_path: Path, mode: Literal["sync", "async"]
+    tmp_path: Path, mode: Literal["sync", "async"], chunk_size: int
 ) -> None:
     """A nonpositive chunk size is rejected before consuming URLs or creating files."""
     # Given
@@ -220,11 +267,27 @@ def test_invalid_chunk_size_does_not_consume_source(
 
     # When
     with pytest.raises(ValueError, match="chunk_size must be positive"):
-        _save(mode, SiteMapr("https://example.com"), tmp_path, urls(), chunk_size=0)
+        _save(mode, SiteMapr("https://example.com"), tmp_path, urls(), chunk_size=chunk_size)
 
     # Then
     assert not consumed
     assert list(tmp_path.iterdir()) == []
+
+
+def _measure_peak_bytes(operation: Callable[[], T]) -> tuple[T, int]:
+    was_tracing = tracemalloc.is_tracing()
+    if not was_tracing:
+        tracemalloc.start()
+    # Exclude earlier allocations and historical peaks from this measurement.
+    tracemalloc.reset_peak()
+    baseline = tracemalloc.get_traced_memory()[0]
+    try:
+        result = operation()
+        peak = tracemalloc.get_traced_memory()[1] - baseline
+    finally:
+        if not was_tracing:
+            tracemalloc.stop()
+    return result, peak
 
 
 def _save(
