@@ -28,15 +28,15 @@ class SiteMapr:
         dirname: str | Path,
         *,
         pages: Iterable[Page],
-        chunk_size: int = 50000,
+        max_urls_per_file: int = 50000,
     ) -> None:
         """Expand and save a page stream in order without retaining a URL batch.
 
-        Each call consumes only its supplied pages. ``chunk_size`` limits URLs
+        Each call consumes only its supplied pages. ``max_urls_per_file`` limits URLs
         per file. The caller owns input iterators and must close resource-backed
         sources on failure. Partial output files may remain after a failure.
         """
-        with _SitemapWriter(dirname, self._sitemap_base_url, chunk_size) as writer:
+        with _SitemapWriter(dirname, self._sitemap_base_url, max_urls_per_file) as writer:
             for page in pages:
                 for url in self._iter_page(page):
                     writer.write(url)
@@ -46,7 +46,7 @@ class SiteMapr:
         dirname: str | Path,
         *,
         pages: AsyncIterable[Page],
-        chunk_size: int = 50000,
+        max_urls_per_file: int = 50000,
     ) -> None:
         """Expand and save an async page stream using the same file writer.
 
@@ -55,7 +55,7 @@ class SiteMapr:
         generators that hold resources. Output handles are closed on failure or
         cancellation, but partial files may remain.
         """
-        with _SitemapWriter(dirname, self._sitemap_base_url, chunk_size) as writer:
+        with _SitemapWriter(dirname, self._sitemap_base_url, max_urls_per_file) as writer:
             async for page in pages:
                 for url in self._iter_page(page):
                     writer.write(url)
@@ -113,12 +113,12 @@ class SiteMapr:
 
 
 class _SitemapWriter:
-    def __init__(self, dirname: str | Path, base_url: str, chunk_size: int) -> None:
-        if chunk_size <= 0:
-            raise ValueError("chunk_size must be positive")
+    def __init__(self, dirname: str | Path, base_url: str, max_urls_per_file: int) -> None:
+        if max_urls_per_file <= 0:
+            raise ValueError("max_urls_per_file must be positive")
         self._directory = Path(dirname)
         self._base_url = base_url
-        self._chunk_size = chunk_size
+        self._max_urls_per_file = max_urls_per_file
         self._file: TextIOWrapper | None = None
         self._file_count = 0
         self._url_count = 0
@@ -145,7 +145,7 @@ class _SitemapWriter:
             self._write_index()
 
     def write(self, url: _SitemapUrl) -> None:
-        if self._url_count == self._chunk_size:
+        if self._url_count == self._max_urls_per_file:
             self._close_file()
         if self._file is None:
             self._file = (self._directory / f"sitemap-{self._file_count}.xml").open(
