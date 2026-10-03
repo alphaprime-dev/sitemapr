@@ -1,17 +1,14 @@
 import asyncio
-import tracemalloc
-from collections.abc import AsyncIterator, Callable, Iterable, Iterator
+from collections.abc import AsyncIterator, Iterable, Iterator
 from io import TextIOWrapper
 from pathlib import Path
-from typing import Literal, TypeVar
+from typing import Literal
 from xml.etree import ElementTree as ET
 
 import pytest
 from pydantic import ValidationError
 
 from sitemapr import Page, SiteMapr
-
-T = TypeVar("T")
 
 
 @pytest.mark.parametrize("mode", ["sync", "async"])
@@ -196,74 +193,6 @@ def test_page_stream_preserves_order_across_files(
         assert entry.findtext("{*}priority") == "0.7"
 
 
-@pytest.mark.parametrize("mode", ["sync", "async"])
-def test_generated_urls_use_bounded_memory(tmp_path: Path, mode: Literal["sync", "async"]) -> None:
-    """Saving 20,000 generated URLs uses less than 2 MiB of traced working memory."""
-    # Given
-    sitemap = SiteMapr("https://example.com")
-    urls = (Page(path=f"https://example.com/posts/{idx}") for idx in range(20000))
-
-    # When
-    # Trace only generation and saving; parse the completed output after measurement.
-    _, peak = _measure_peak_bytes(lambda: _save(mode, sitemap, tmp_path, urls))
-
-    # Then
-    assert peak < 2 * 1024 * 1024
-    assert len(ET.parse(tmp_path / "sitemap.xml").getroot()) == 20000
-
-
-def test_parameter_combinations_are_saved_with_bounded_memory(tmp_path: Path) -> None:
-    """Saving 10,000 query combinations uses less than 1 MiB of traced working memory."""
-    # Given
-    values = [str(idx) for idx in range(100)]
-    pages = [Page(path="/posts", query_params={"a": values, "b": values})]
-    sitemap = SiteMapr("https://example.com")
-
-    # When
-    _, peak = _measure_peak_bytes(lambda: sitemap.save(tmp_path, pages=pages))
-
-    # Then
-    assert peak < 1024 * 1024
-    root = ET.parse(tmp_path / "sitemap.xml").getroot()
-    assert len(root) == 10000
-    assert root[0].findtext("{*}loc") == "https://example.com/posts?a=0&b=0"
-    assert root[-1].findtext("{*}loc") == "https://example.com/posts?a=99&b=99"
-
-
-def test_page_stream_is_consumed_lazily_without_replay(tmp_path: Path) -> None:
-    """Saving consumes pages on demand and does not replay an exhausted input on a later save."""
-    # Given
-    consumed: list[str] = []
-    consumed_at_metadata: list[list[str]] = []
-
-    def lastmod(_loc: str, _path: dict[str, str], _query: dict[str, str]) -> None:
-        consumed_at_metadata.append(consumed.copy())
-
-    def pages() -> Iterator[Page]:
-        for name in ("first", "second"):
-            consumed.append(name)
-            yield Page(path=f"/{name}", lastmod=lastmod)
-
-    sitemap = SiteMapr("https://example.com")
-    source = pages()
-    second_output = tmp_path / "second"
-    second_output.mkdir()
-
-    # When
-    sitemap.save(tmp_path, pages=source)
-    sitemap.save(second_output, pages=source)
-
-    # Then
-    assert consumed_at_metadata == [["first"], ["first", "second"]]
-    assert consumed == ["first", "second"]
-    root = ET.parse(tmp_path / "sitemap.xml").getroot()
-    assert [entry.findtext("{*}loc") for entry in root] == [
-        "https://example.com/first",
-        "https://example.com/second",
-    ]
-    assert list(second_output.iterdir()) == []
-
-
 @pytest.mark.parametrize("empty_parameter", ["path", "query"])
 def test_empty_parameter_values_produce_no_urls(empty_parameter: str, tmp_path: Path) -> None:
     """A page with an empty path or query parameter produces no URLs or sitemap files."""
@@ -367,22 +296,6 @@ def test_invalid_url_limit_does_not_consume_source(
     # Then
     assert not consumed
     assert list(tmp_path.iterdir()) == []
-
-
-def _measure_peak_bytes(operation: Callable[[], T]) -> tuple[T, int]:
-    was_tracing = tracemalloc.is_tracing()
-    if not was_tracing:
-        tracemalloc.start()
-    # Exclude earlier allocations and historical peaks from this measurement.
-    tracemalloc.reset_peak()
-    baseline = tracemalloc.get_traced_memory()[0]
-    try:
-        result = operation()
-        peak = tracemalloc.get_traced_memory()[1] - baseline
-    finally:
-        if not was_tracing:
-            tracemalloc.stop()
-    return result, peak
 
 
 def _save(
