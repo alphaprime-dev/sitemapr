@@ -1,270 +1,138 @@
-import pathlib
+import asyncio
+from collections.abc import AsyncIterator
+from pathlib import Path
+from xml.etree import ElementTree as ET
 
 import pytest
 from pydantic import ValidationError
 
-from sitemapr import Page, Param, SiteMapr, SiteMapUrl
+from sitemapr import Page, SiteMapr
 
 
-def test_iter_url_works():
-    """iter_url should return all possible urls."""
-    # given
-    base_url = "https://example.com"
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+def test_save_expands_all_parameter_combinations_with_metadata(
+    tmp_path: Path, asynchronous: bool
+) -> None:
+    """Saving pairs every query/path value in order and evaluates metadata for each raw URL."""
+    # Given
+    callback_inputs: list[tuple[str, dict[str, str], dict[str, str]]] = []
+
+    def lastmod(loc: str, path: dict[str, str], query: dict[str, str]) -> str | None:
+        callback_inputs.append((loc, path.copy(), query.copy()))
+        return "2026-01-02T03:04:00+00:00" if path["id"] == "1" else None
+
     pages = [
         Page(
-            path="",
-            query_params=[
-                Param(name="page", values=["home", "about", "contact"]),
-                Param(name="sort", values=["asc", "desc"]),
-            ],
-            lastmod="2021-01-01T00:00:00+00:00",
+            path="/posts/{id}",
+            path_params={"id": ["1", "2"]},
+            query_params={"lang": ["ko", "en"], "sort": ["asc"]},
+            lastmod=lastmod,
+            changefreq=lambda _loc, _path, query: "daily" if query["lang"] == "ko" else None,
+            priority=lambda _loc, path, _query: "1" if path["id"] == "1" else "0.7",
+        )
+    ]
+    sitemap = SiteMapr("https://example.com")
+
+    # When
+    if asynchronous:
+        asyncio.run(sitemap.asave(tmp_path, pages=_as_async(pages)))
+    else:
+        sitemap.save(tmp_path, pages=pages)
+
+    # Then
+    root = ET.parse(tmp_path / "sitemap.xml").getroot()
+    entries = [{child.tag.rsplit("}", 1)[-1]: child.text for child in entry} for entry in root]
+    assert entries == [
+        {
+            "loc": "https://example.com/posts/1?lang=ko&sort=asc",
+            "lastmod": "2026-01-02T03:04:00+00:00",
+            "changefreq": "daily",
+            "priority": "1.0",
+        },
+        {
+            "loc": "https://example.com/posts/2?lang=ko&sort=asc",
+            "changefreq": "daily",
+            "priority": "0.7",
+        },
+        {
+            "loc": "https://example.com/posts/1?lang=en&sort=asc",
+            "lastmod": "2026-01-02T03:04:00+00:00",
+            "priority": "1.0",
+        },
+        {"loc": "https://example.com/posts/2?lang=en&sort=asc", "priority": "0.7"},
+    ]
+    assert callback_inputs == [
+        (
+            "https://example.com/posts/1?lang=ko&sort=asc",
+            {"id": "1"},
+            {"lang": "ko", "sort": "asc"},
         ),
-        Page(
-            path="/blog",
-            query_params=[
-                Param(name="page", values=["1", "2", "3"]),
-                Param(name="sort", values=["asc", "desc"]),
-            ],
-            lastmod=lambda _loc, _page_params, query_params: (
-                "2021-01-02T00:00:00+00:00" if query_params["page"] == "1" else None
-            ),
+        (
+            "https://example.com/posts/2?lang=ko&sort=asc",
+            {"id": "2"},
+            {"lang": "ko", "sort": "asc"},
         ),
-        Page(
-            path="/blog/{id}",
-            path_params=[Param(name="id", values=["1", "2", "3"])],
-            changefreq="daily",
-            priority=lambda _loc, path_params, _query_params: (
-                "1.0" if path_params["id"] == "1" else "0.7"
-            ),
+        (
+            "https://example.com/posts/1?lang=en&sort=asc",
+            {"id": "1"},
+            {"lang": "en", "sort": "asc"},
+        ),
+        (
+            "https://example.com/posts/2?lang=en&sort=asc",
+            {"id": "2"},
+            {"lang": "en", "sort": "asc"},
         ),
     ]
-    sitemapr = SiteMapr(base_url=base_url, pages=pages)
-
-    # when
-    actuals = list(sitemapr.iter_urls())
-
-    # then
-    expected = [
-        SiteMapUrl(
-            loc="https://example.com?page=home&sort=asc",
-            lastmod="2021-01-01T00:00:00+00:00",
-            changefreq=None,
-            priority=None,
-        ),
-        SiteMapUrl(
-            loc="https://example.com?page=home&sort=desc",
-            lastmod="2021-01-01T00:00:00+00:00",
-            changefreq=None,
-            priority=None,
-        ),
-        SiteMapUrl(
-            loc="https://example.com?page=about&sort=asc",
-            lastmod="2021-01-01T00:00:00+00:00",
-            changefreq=None,
-            priority=None,
-        ),
-        SiteMapUrl(
-            loc="https://example.com?page=about&sort=desc",
-            lastmod="2021-01-01T00:00:00+00:00",
-            changefreq=None,
-            priority=None,
-        ),
-        SiteMapUrl(
-            loc="https://example.com?page=contact&sort=asc",
-            lastmod="2021-01-01T00:00:00+00:00",
-            changefreq=None,
-            priority=None,
-        ),
-        SiteMapUrl(
-            loc="https://example.com?page=contact&sort=desc",
-            lastmod="2021-01-01T00:00:00+00:00",
-            changefreq=None,
-            priority=None,
-        ),
-        SiteMapUrl(
-            loc="https://example.com/blog?page=1&sort=asc",
-            lastmod="2021-01-02T00:00:00+00:00",
-            changefreq=None,
-            priority=None,
-        ),
-        SiteMapUrl(
-            loc="https://example.com/blog?page=1&sort=desc",
-            lastmod="2021-01-02T00:00:00+00:00",
-            changefreq=None,
-            priority=None,
-        ),
-        SiteMapUrl(
-            loc="https://example.com/blog?page=2&sort=asc",
-            lastmod=None,
-            changefreq=None,
-            priority=None,
-        ),
-        SiteMapUrl(
-            loc="https://example.com/blog?page=2&sort=desc",
-            lastmod=None,
-            changefreq=None,
-            priority=None,
-        ),
-        SiteMapUrl(
-            loc="https://example.com/blog?page=3&sort=asc",
-            lastmod=None,
-            changefreq=None,
-            priority=None,
-        ),
-        SiteMapUrl(
-            loc="https://example.com/blog?page=3&sort=desc",
-            lastmod=None,
-            changefreq=None,
-            priority=None,
-        ),
-        SiteMapUrl(
-            loc="https://example.com/blog/1",
-            lastmod=None,
-            changefreq="daily",
-            priority="1.0",
-        ),
-        SiteMapUrl(
-            loc="https://example.com/blog/2",
-            lastmod=None,
-            changefreq="daily",
-            priority="0.7",
-        ),
-        SiteMapUrl(
-            loc="https://example.com/blog/3",
-            lastmod=None,
-            changefreq="daily",
-            priority="0.7",
-        ),
-    ]
-    assert actuals == expected
 
 
-def test_iter_url_raises_error_when_priority_is_invalid():
-    """iter_url should raise an error when priority is invalid."""
-    # given
-    invalid_priority = "1.1"
+@pytest.mark.parametrize("callback", [False, True], ids=["constant", "callback"])
+def test_invalid_priority_is_rejected_before_writing(tmp_path: Path, callback: bool) -> None:
+    """An out-of-range constant or callback priority is rejected before creating output files."""
+    # Given
+    page = Page(
+        path="/posts/1",
+        priority=(lambda _loc, _path, _query: "1.1") if callback else "1.1",
+    )
 
-    base_url = "https://example.com"
+    # When
+    with pytest.raises(ValidationError, match="Priority must be between 0.0 and 1.0"):
+        SiteMapr("https://example.com").save(tmp_path, pages=[page])
+
+    # Then
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_relative_paths_and_absolute_urls_share_one_input(tmp_path: Path) -> None:
+    """Relative paths and absolute URLs retain their existing query and fragment when saved."""
+    # Given
     pages = [
-        Page(
-            path="",
-            query_params=[
-                Param(name="page", values=["home", "about", "contact"]),
-                Param(name="sort", values=["asc", "desc"]),
-            ],
-            priority=invalid_priority,
-        ),
+        Page(path="/posts/1"),
+        Page(path="https://other.example.com/posts?feed=1#section", query_params={"lang": ["ko"]}),
     ]
-    sitemapr = SiteMapr(base_url=base_url, pages=pages)
 
-    # when, then
-    with pytest.raises(ValidationError):
-        list(sitemapr.iter_urls())
+    # When
+    SiteMapr("https://example.com/app").save(tmp_path, pages=pages)
 
-
-def test_save_works(tmp_path: pathlib.Path):
-    """save should save sitemap.xml when there is only one page."""
-    # given
-    base_url = "https://example.com"
-    pages = [
-        Page(
-            path="",
-            query_params=[
-                Param(name="page", values=["home", "about", "contact"]),
-                Param(name="sort", values=["asc", "desc"]),
-            ],
-        ),
-        Page(
-            path="/blog",
-            query_params=[
-                Param(name="page", values=["1", "2", "3"]),
-                Param(name="sort", values=["asc", "desc"]),
-            ],
-        ),
-        Page(
-            path="/blog/{id}",
-            path_params=[Param(name="id", values=["1", "2", "3"])],
-        ),
+    # Then
+    root = ET.parse(tmp_path / "sitemap.xml").getroot()
+    assert [entry.findtext("{*}loc") for entry in root] == [
+        "https://example.com/app/posts/1",
+        "https://other.example.com/posts?feed=1&lang=ko#section",
     ]
-    sitemapr = SiteMapr(base_url=base_url, pages=pages)
-
-    # when
-    dirname = str(tmp_path)
-    sitemapr.save(dirname, chunk_size=50000)
-
-    # then
-    with open(f"{dirname}/sitemap.xml") as f:
-        content = f.read()
-        assert (
-            content
-            == '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://example.com?page=home&amp;sort=asc</loc></url><url><loc>https://example.com?page=home&amp;sort=desc</loc></url><url><loc>https://example.com?page=about&amp;sort=asc</loc></url><url><loc>https://example.com?page=about&amp;sort=desc</loc></url><url><loc>https://example.com?page=contact&amp;sort=asc</loc></url><url><loc>https://example.com?page=contact&amp;sort=desc</loc></url><url><loc>https://example.com/blog?page=1&amp;sort=asc</loc></url><url><loc>https://example.com/blog?page=1&amp;sort=desc</loc></url><url><loc>https://example.com/blog?page=2&amp;sort=asc</loc></url><url><loc>https://example.com/blog?page=2&amp;sort=desc</loc></url><url><loc>https://example.com/blog?page=3&amp;sort=asc</loc></url><url><loc>https://example.com/blog?page=3&amp;sort=desc</loc></url><url><loc>https://example.com/blog/1</loc></url><url><loc>https://example.com/blog/2</loc></url><url><loc>https://example.com/blog/3</loc></url></urlset>'
-        )
 
 
-def test_save_works_with_multiple_chunks(tmp_path: pathlib.Path):
-    """save should save sitemap.xml and sitemap-index.xml when there are multiple chunks."""
+def test_empty_page_stream_creates_no_files(tmp_path: Path) -> None:
+    """Saving an empty page stream creates no sitemap or index files."""
+    # Given
+    sitemap = SiteMapr("https://example.com")
 
-    # given
-    base_url = "https://example.com"
-    pages = [
-        Page(
-            path="",
-            query_params=[
-                Param(name="page", values=["home", "about", "contact"]),
-                Param(name="sort", values=["asc", "desc"]),
-            ],
-        ),
-        Page(
-            path="/blog",
-            query_params=[
-                Param(name="page", values=["1", "2", "3"]),
-                Param(name="sort", values=["asc", "desc"]),
-            ],
-        ),
-        Page(
-            path="/blog/{id}",
-            path_params=[Param(name="id", values=["1", "2", "3"])],
-        ),
-    ]
-    sitemapr = SiteMapr(base_url=base_url, pages=pages)
+    # When
+    sitemap.save(tmp_path, pages=[])
 
-    # when
-    dirname = str(tmp_path)
-    sitemapr.save(dirname, chunk_size=10)
-
-    # then
-    with open(f"{dirname}/sitemap.xml") as f:
-        content = f.read()
-        assert (
-            content
-            == '<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><sitemap><loc>https://example.com/sitemap-0.xml</loc></sitemap><sitemap><loc>https://example.com/sitemap-1.xml</loc></sitemap></sitemapindex>'
-        )
-
-    with open(f"{dirname}/sitemap-0.xml") as f:
-        content = f.read()
-        assert (
-            content
-            == '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://example.com?page=home&amp;sort=asc</loc></url><url><loc>https://example.com?page=home&amp;sort=desc</loc></url><url><loc>https://example.com?page=about&amp;sort=asc</loc></url><url><loc>https://example.com?page=about&amp;sort=desc</loc></url><url><loc>https://example.com?page=contact&amp;sort=asc</loc></url><url><loc>https://example.com?page=contact&amp;sort=desc</loc></url><url><loc>https://example.com/blog?page=1&amp;sort=asc</loc></url><url><loc>https://example.com/blog?page=1&amp;sort=desc</loc></url><url><loc>https://example.com/blog?page=2&amp;sort=asc</loc></url><url><loc>https://example.com/blog?page=2&amp;sort=desc</loc></url></urlset>'
-        )
-
-    with open(f"{dirname}/sitemap-1.xml") as f:
-        content = f.read()
-        assert (
-            content
-            == '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://example.com/blog?page=3&amp;sort=asc</loc></url><url><loc>https://example.com/blog?page=3&amp;sort=desc</loc></url><url><loc>https://example.com/blog/1</loc></url><url><loc>https://example.com/blog/2</loc></url><url><loc>https://example.com/blog/3</loc></url></urlset>'
-        )
+    # Then
+    assert list(tmp_path.iterdir()) == []
 
 
-def test_save_works_without_pages(tmp_path: pathlib.Path):
-    """save should not save anything when there are no pages."""
-    # given
-    base_url = "https://example.com"
-    pages: list[Page] = []
-    sitemapr = SiteMapr(base_url=base_url, pages=pages)
-
-    # when
-    dirname = str(tmp_path)
-    sitemapr.save(dirname, chunk_size=10)
-
-    # then
-    assert not list(tmp_path.iterdir())
+async def _as_async(pages: list[Page]) -> AsyncIterator[Page]:
+    for page in pages:
+        yield page

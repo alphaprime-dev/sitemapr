@@ -1,6 +1,6 @@
 # sitemapr
 
-Generate XML sitemaps from page definitions or URL streams, with automatic file splitting.
+Generate XML sitemaps from pages, with automatic file splitting.
 
 ## Installation
 
@@ -12,43 +12,35 @@ pip install sitemapr
 
 ```python
 from pathlib import Path
-from sitemapr import Page, Param, SiteMapr
+from sitemapr import Page, SiteMapr
 
 output = Path("sitemaps")
 output.mkdir(exist_ok=True)
 
-sitemapr = SiteMapr(
-    "https://example.com",
-    pages=[
-        Page(path="/"),
-        Page(
-            path="/posts/{id}",
-            path_params=[Param(name="id", values=["1", "2", "3"])],
-        ),
-    ],
-)
-sitemapr.save(str(output))
+sitemap = SiteMapr("https://example.com")
+pages = [
+    Page(path="/"),
+    Page(path="/posts/{id}", path_params={"id": ["1", "2", "3"]}),
+]
+sitemap.save(output, pages=pages)
 ```
 
 Find the generated sitemap at `sitemaps/sitemap.xml`.
 Use `query_params` for query strings and `lastmod`, `changefreq`, or `priority` for URL metadata.
 
-## Streaming URLs
+## Streaming pages
 
-Pass an iterable of `SiteMapUrl` objects to `save()`:
+For large inputs, pass a generator of pages to `save()`:
 
 ```python
-from sitemapr import SiteMapr, SiteMapUrl
-
-sitemapr = SiteMapr("https://example.com")
-urls = (SiteMapUrl(loc=f"https://example.com/posts/{post_id}") for post_id in range(100000))
-sitemapr.save("sitemaps", urls=urls)
+pages = (Page(path=f"/posts/{post_id}") for post_id in range(100000))
+sitemap.save(output, pages=pages)
 ```
 
-For an async iterable of `SiteMapUrl` objects, use `asave()`:
+For an async iterable of pages, use `asave()`:
 
 ```python
-await sitemapr.asave("sitemaps", urls=async_urls)
+await sitemap.asave(output, pages=async_pages)
 ```
 
 ## License

@@ -1,94 +1,82 @@
+from __future__ import annotations
+
 from collections.abc import AsyncIterable, Iterable, Iterator
+from decimal import Decimal
 from io import TextIOWrapper
 from pathlib import Path
 from types import TracebackType
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, urlunsplit
 from xml.sax.saxutils import escape
 
-from sitemapr.models import Page, Param, SiteMapUrl
+from pydantic import BaseModel, field_validator
+
+from sitemapr.models import ChangeFreq, Page
 
 _XML_HEADER = '<?xml version="1.0" encoding="UTF-8"?>'
 _XML_NAMESPACE = "http://www.sitemaps.org/schemas/sitemap/0.9"
 
 
 class SiteMapr:
-    """Generate sitemaps from declarative pages and streams of additional URLs.
+    """Save page streams as sitemaps using a website URL and optional index URL."""
 
-    Args:
-        base_url: The base URL of the website.
-        pages: Pages to expand lazily. A generator is consumed only once.
-        sitemap_base_url: The base URL used in the sitemap index; defaults to base_url.
-    """
-
-    def __init__(
-        self,
-        base_url: str,
-        pages: Iterable[Page] = (),
-        *,
-        sitemap_base_url: str | None = None,
-    ) -> None:
+    def __init__(self, base_url: str, *, sitemap_base_url: str | None = None) -> None:
         self._base_url = base_url
         self._sitemap_base_url = sitemap_base_url or base_url
-        self._pages = pages
 
     def save(
         self,
-        dirname: str,
+        dirname: str | Path,
         *,
-        urls: Iterable[SiteMapUrl] = (),
+        pages: Iterable[Page],
         chunk_size: int = 50000,
     ) -> None:
-        """Write pages followed by additional URLs, without buffering either stream.
+        """Expand and save a page stream in order without retaining a URL batch.
 
-        ``chunk_size`` limits URLs per file, not the number held in memory.
-        The caller owns supplied iterators and must close resource-backed sources
-        when saving fails. Partial output files may remain after a failure.
+        Each call consumes only its supplied pages. ``chunk_size`` limits URLs
+        per file. The caller owns input iterators and must close resource-backed
+        sources on failure. Partial output files may remain after a failure.
         """
         with _SitemapWriter(dirname, self._sitemap_base_url, chunk_size) as writer:
-            for url in self.iter_urls():
-                writer.write(url)
-            for url in urls:
-                writer.write(url)
+            for page in pages:
+                for url in self._iter_page(page):
+                    writer.write(url)
 
     async def asave(
         self,
-        dirname: str,
+        dirname: str | Path,
         *,
-        urls: AsyncIterable[SiteMapUrl],
+        pages: AsyncIterable[Page],
         chunk_size: int = 50000,
     ) -> None:
-        """Write pages followed by an async URL stream using the same file writer.
+        """Expand and save an async page stream using the same file writer.
 
-        URL retrieval is asynchronous; local file writes use buffered synchronous IO.
-        The caller owns the async iterator; use ``contextlib.aclosing`` for async
-        generators that hold resources. Partial files may remain after a failure
-        or cancellation, but all output file handles are closed.
+        Retrieval is asynchronous; local file writes use buffered synchronous IO.
+        The caller owns the iterator; use ``contextlib.aclosing`` for async
+        generators that hold resources. Output handles are closed on failure or
+        cancellation, but partial files may remain.
         """
         with _SitemapWriter(dirname, self._sitemap_base_url, chunk_size) as writer:
-            for url in self.iter_urls():
-                writer.write(url)
-            async for url in urls:
-                writer.write(url)
+            async for page in pages:
+                for url in self._iter_page(page):
+                    writer.write(url)
 
-    def iter_urls(self) -> Iterator[SiteMapUrl]:
-        """Yield unescaped URLs from pages, expanding parameter combinations lazily."""
-        for page in self._pages:
-            yield from self._iter_page(page)
-
-    def _iter_page(self, page: Page) -> Iterator[SiteMapUrl]:
-        if any(not param.values for param in page.path_params + page.query_params):
+    def _iter_page(self, page: Page) -> Iterator[_SitemapUrl]:
+        path_options = list(page.path_params.items())
+        query_options = list(page.query_params.items())
+        if any(not values for _, values in path_options + query_options):
             return
 
         # Nested iteration avoids itertools.product caching the generated combinations.
-        for query_params in self._get_param_combinations(page.query_params):
-            for path_params in self._get_param_combinations(page.path_params):
+        for query_params in self._iter_param_combinations(query_options):
+            for path_params in self._iter_param_combinations(path_options):
                 path = page.path.format(**path_params)
-                query_string = urlencode(query_params)
                 loc = (
-                    f"{self._base_url}{path}?{query_string}"
-                    if query_string
-                    else f"{self._base_url}{path}"
+                    path if path.startswith(("http://", "https://")) else f"{self._base_url}{path}"
                 )
+                if query_params:
+                    parts = urlsplit(loc)
+                    query = "&".join(filter(None, (parts.query, urlencode(query_params))))
+                    loc = urlunsplit(parts._replace(query=query))
                 lastmod = (
                     page.lastmod(loc, path_params, query_params)
                     if callable(page.lastmod)
@@ -104,28 +92,28 @@ class SiteMapr:
                     if callable(page.priority)
                     else page.priority
                 )
-                yield SiteMapUrl(
+                yield _SitemapUrl(
                     loc=loc,
                     lastmod=lastmod,
                     changefreq=changefreq,
                     priority=priority,
                 )
 
-    def _get_param_combinations(
-        self, params: list[Param], index: int = 0
+    def _iter_param_combinations(
+        self, params: list[tuple[str, list[str]]], index: int = 0
     ) -> Iterator[dict[str, str]]:
         if index == len(params):
             yield {}
             return
 
-        param = params[index]
-        for value in param.values:
-            for remaining in self._get_param_combinations(params, index + 1):
-                yield {param.name: value, **remaining}
+        name, values = params[index]
+        for value in values:
+            for remaining in self._iter_param_combinations(params, index + 1):
+                yield {name: value, **remaining}
 
 
 class _SitemapWriter:
-    def __init__(self, dirname: str, base_url: str, chunk_size: int) -> None:
+    def __init__(self, dirname: str | Path, base_url: str, chunk_size: int) -> None:
         if chunk_size <= 0:
             raise ValueError("chunk_size must be positive")
         self._directory = Path(dirname)
@@ -135,7 +123,7 @@ class _SitemapWriter:
         self._file_count = 0
         self._url_count = 0
 
-    def __enter__(self) -> "_SitemapWriter":
+    def __enter__(self) -> _SitemapWriter:
         return self
 
     def __exit__(
@@ -156,7 +144,7 @@ class _SitemapWriter:
         elif self._file_count > 1:
             self._write_index()
 
-    def write(self, url: SiteMapUrl) -> None:
+    def write(self, url: _SitemapUrl) -> None:
         if self._url_count == self._chunk_size:
             self._close_file()
         if self._file is None:
@@ -193,3 +181,28 @@ class _SitemapWriter:
                 loc = escape(f"{self._base_url}/sitemap-{idx}.xml")
                 f.write(f"<sitemap><loc>{loc}</loc></sitemap>")
             f.write("</sitemapindex>")
+
+
+class _SitemapUrl(BaseModel):
+    """Resolved URL metadata, validated before serialization."""
+
+    # Refer to https://developers.google.com/search/docs/crawling-indexing/sitemaps/build-sitemap?hl=ko#xml
+    loc: str
+    lastmod: str | None = None
+    changefreq: ChangeFreq | None = None  # Google ignores this
+    priority: str | None = None  # Google ignores this
+
+    @field_validator("priority")
+    @classmethod
+    def validate_priority(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        try:
+            priority = Decimal(v)
+        except Exception as e:
+            raise ValueError("Priority must be a valid decimal string between 0.0 and 1.0") from e
+
+        if 0 <= priority <= 1:
+            return f"{priority:.1f}"
+
+        raise ValueError("Priority must be between 0.0 and 1.0")
