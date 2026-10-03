@@ -26,6 +26,8 @@ class Page(BaseModel):
 
 
 class SiteMapUrl(BaseModel):
+    """A URL and its metadata; pass loc without XML escaping."""
+
     # Refer to https://developers.google.com/search/docs/crawling-indexing/sitemaps/build-sitemap?hl=ko#xml
     loc: str
     lastmod: str | None = None

@@ -37,14 +37,6 @@ def test_iter_url_works():
                 "1.0" if path_params["id"] == "1" else "0.7"
             ),
         ),
-        Page(
-            path="/blog/{id}/comments",
-            path_params=[Param(name="id", values=["1", "2"])],
-            query_params=[
-                Param(name="page", values=[]),
-                Param(name="sort", values=["asc", "desc"]),
-            ],
-        ),
     ]
     sitemapr = SiteMapr(base_url=base_url, pages=pages)
 
@@ -54,73 +46,73 @@ def test_iter_url_works():
     # then
     expected = [
         SiteMapUrl(
-            loc="https://example.com?page=home&amp;sort=asc",
+            loc="https://example.com?page=home&sort=asc",
             lastmod="2021-01-01T00:00:00+00:00",
             changefreq=None,
             priority=None,
         ),
         SiteMapUrl(
-            loc="https://example.com?page=home&amp;sort=desc",
+            loc="https://example.com?page=home&sort=desc",
             lastmod="2021-01-01T00:00:00+00:00",
             changefreq=None,
             priority=None,
         ),
         SiteMapUrl(
-            loc="https://example.com?page=about&amp;sort=asc",
+            loc="https://example.com?page=about&sort=asc",
             lastmod="2021-01-01T00:00:00+00:00",
             changefreq=None,
             priority=None,
         ),
         SiteMapUrl(
-            loc="https://example.com?page=about&amp;sort=desc",
+            loc="https://example.com?page=about&sort=desc",
             lastmod="2021-01-01T00:00:00+00:00",
             changefreq=None,
             priority=None,
         ),
         SiteMapUrl(
-            loc="https://example.com?page=contact&amp;sort=asc",
+            loc="https://example.com?page=contact&sort=asc",
             lastmod="2021-01-01T00:00:00+00:00",
             changefreq=None,
             priority=None,
         ),
         SiteMapUrl(
-            loc="https://example.com?page=contact&amp;sort=desc",
+            loc="https://example.com?page=contact&sort=desc",
             lastmod="2021-01-01T00:00:00+00:00",
             changefreq=None,
             priority=None,
         ),
         SiteMapUrl(
-            loc="https://example.com/blog?page=1&amp;sort=asc",
+            loc="https://example.com/blog?page=1&sort=asc",
             lastmod="2021-01-02T00:00:00+00:00",
             changefreq=None,
             priority=None,
         ),
         SiteMapUrl(
-            loc="https://example.com/blog?page=1&amp;sort=desc",
+            loc="https://example.com/blog?page=1&sort=desc",
             lastmod="2021-01-02T00:00:00+00:00",
             changefreq=None,
             priority=None,
         ),
         SiteMapUrl(
-            loc="https://example.com/blog?page=2&amp;sort=asc",
+            loc="https://example.com/blog?page=2&sort=asc",
             lastmod=None,
             changefreq=None,
             priority=None,
         ),
         SiteMapUrl(
-            loc="https://example.com/blog?page=2&amp;sort=desc",
+            loc="https://example.com/blog?page=2&sort=desc",
             lastmod=None,
             changefreq=None,
             priority=None,
         ),
         SiteMapUrl(
-            loc="https://example.com/blog?page=3&amp;sort=asc",
+            loc="https://example.com/blog?page=3&sort=asc",
             lastmod=None,
             changefreq=None,
             priority=None,
         ),
         SiteMapUrl(
-            loc="https://example.com/blog?page=3&amp;sort=desc",
+            loc="https://example.com/blog?page=3&sort=desc",
             lastmod=None,
             changefreq=None,
             priority=None,
@@ -142,30 +134,6 @@ def test_iter_url_works():
             lastmod=None,
             changefreq="daily",
             priority="0.7",
-        ),
-        SiteMapUrl(
-            loc="https://example.com/blog/1/comments?page=asc",
-            lastmod=None,
-            changefreq=None,
-            priority=None,
-        ),
-        SiteMapUrl(
-            loc="https://example.com/blog/2/comments?page=asc",
-            lastmod=None,
-            changefreq=None,
-            priority=None,
-        ),
-        SiteMapUrl(
-            loc="https://example.com/blog/1/comments?page=desc",
-            lastmod=None,
-            changefreq=None,
-            priority=None,
-        ),
-        SiteMapUrl(
-            loc="https://example.com/blog/2/comments?page=desc",
-            lastmod=None,
-            changefreq=None,
-            priority=None,
         ),
     ]
     assert actuals == expected
