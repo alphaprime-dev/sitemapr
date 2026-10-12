@@ -1,19 +1,19 @@
-## 변경 이유
+## Reason for Change
 
 -
 
-## 변경사항
+## Changes
 
 -
 
-## 테스트
+## Test
 
 - [ ]
 
 ## Tags
 
-> _추후 검색 및 분류를 위해 #으로 시작하는 키워드들을 입력해 주세요._
+> _Add #prefixed keywords for future search and categorization._
 
-## 태스크 링크
+## Task Link
 
 -
